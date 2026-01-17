@@ -8,7 +8,7 @@ CREATE TABLE config (
     rest TEXT NOT NULL,
     sse TEXT NOT NULL,
     rpc TEXT NOT NULL,
-    binary TEXT NOT NULL,
+    "binary" TEXT NOT NULL,
     gossip TEXT NOT NULL,
     FOREIGN KEY (network_name) REFERENCES network (network_name)
 );
