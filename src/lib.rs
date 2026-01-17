@@ -20,7 +20,7 @@ use tracing::{info, warn};
 use crate::binary_proxy::BinaryPool;
 use crate::config::AppConfig;
 use crate::metrics::RpcMetrics;
-use crate::rate_limit::{rate_limit_layer, rpc_rate_limiter};
+use crate::rate_limit::rate_limit_layer;
 use crate::state::{AppState, EventBus, NetworkState};
 
 /// Build the shared state, wire routes, and run the HTTP server.
@@ -67,10 +67,6 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         networks: Arc::new(network_map),
         rpc_client,
         metrics: RpcMetrics::default(),
-        rpc_rate_limiter: rpc_rate_limiter(
-            config.rpc_rate_limit_per_min,
-            config.rpc_rate_limit_burst,
-        ),
     };
 
     let app = handlers::routes(app_state).layer(rate_limit_layer(

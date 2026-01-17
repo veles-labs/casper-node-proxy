@@ -8,13 +8,10 @@ use casper_node_proxy::binary_proxy::BinaryPool;
 use casper_node_proxy::handlers;
 use casper_node_proxy::metrics::RpcMetrics;
 use casper_node_proxy::models::NetworkConfig;
-use casper_node_proxy::rate_limit::rpc_rate_limiter;
 use casper_node_proxy::state::{AppState, EventBus, NetworkState};
 
 #[tokio::test]
-async fn proxy_accepts_batched_requests() {
-    let url = std::env::var("SIDECAR_RPC_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:11101/rpc".to_string());
+async fn proxy_rejects_batched_requests() {
     let network_name = "local";
 
     let config = NetworkConfig {
@@ -22,7 +19,7 @@ async fn proxy_accepts_batched_requests() {
         chain_name: "test-chain".to_string(),
         rest: String::new(),
         sse: String::new(),
-        rpc: url,
+        rpc: "http://127.0.0.1:0".to_string(),
         binary: "127.0.0.1:0".to_string(),
         gossip: String::new(),
     };
@@ -45,7 +42,6 @@ async fn proxy_accepts_batched_requests() {
         networks: Arc::new(networks),
         rpc_client,
         metrics: RpcMetrics::default(),
-        rpc_rate_limiter: rpc_rate_limiter(1_000, 1_000),
     };
 
     let app = handlers::routes(app_state);
@@ -84,8 +80,9 @@ async fn proxy_accepts_batched_requests() {
         .await
         .expect("proxy RPC endpoint must be reachable for integration tests");
 
-    assert!(
-        response.status().is_success(),
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::BAD_REQUEST,
         "proxy RPC returned unexpected status: {}",
         response.status()
     );
@@ -94,21 +91,9 @@ async fn proxy_accepts_batched_requests() {
         .json()
         .await
         .expect("proxy RPC response must be valid JSON");
-
-    let items = value
-        .as_array()
-        .expect("proxy RPC response must be a JSON array");
     assert_eq!(
-        items.len(),
-        batch.len(),
-        "sidecar RPC response size mismatch"
+        value.get("error").and_then(|v| v.as_str()),
+        Some("JSON-RPC batching is not supported"),
+        "expected batch rejection error"
     );
-
-    for item in items {
-        assert!(item.get("id").is_some(), "missing response id");
-        assert!(
-            item.get("result").is_some() || item.get("error").is_some(),
-            "missing result or error in response item"
-        );
-    }
 }

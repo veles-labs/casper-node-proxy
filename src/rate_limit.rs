@@ -1,16 +1,9 @@
-//! Rate limit helpers for HTTP and per-item JSON-RPC enforcement.
+//! Rate limit helpers for HTTP requests.
 
 use std::time::Duration;
 
-use std::net::IpAddr;
-use std::num::NonZeroU32;
-use std::sync::Arc;
-
 use axum::body::Body;
-use governor::clock::DefaultClock;
 use governor::middleware::StateInformationMiddleware;
-use governor::state::keyed::DefaultKeyedStateStore;
-use governor::{Quota, RateLimiter};
 use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
 use tower_governor::key_extractor::SmartIpKeyExtractor;
@@ -37,19 +30,4 @@ fn per_minute_to_period(per_minute: u32) -> Duration {
     }
     let millis = 60_000u64 / per_minute as u64;
     Duration::from_millis(millis.max(1))
-}
-
-/// Rate limiter used for per-item JSON-RPC enforcement.
-pub type RpcRateLimiter = Arc<
-    RateLimiter<IpAddr, DefaultKeyedStateStore<IpAddr>, DefaultClock, StateInformationMiddleware>,
->;
-
-/// Build the per-item JSON-RPC rate limiter with burst support.
-pub fn rpc_rate_limiter(per_minute: u32, burst_size: u32) -> RpcRateLimiter {
-    let period = per_minute_to_period(per_minute);
-    let burst = NonZeroU32::new(burst_size.max(1)).expect("non-zero burst");
-    let quota = Quota::with_period(period)
-        .expect("rate limit period must be non-zero")
-        .allow_burst(burst);
-    Arc::new(RateLimiter::keyed(quota).with_middleware::<StateInformationMiddleware>())
 }

@@ -1,14 +1,14 @@
 # Casper Node Proxy
 
-HTTP proxy for Casper node/sidecar with per-network routing, SSE fanout, JSON-RPC batching, and binary port bridging.
+HTTP proxy for Casper node/sidecar with per-network routing, SSE fanout, JSON-RPC proxying, and binary port bridging.
 
 ## Features
 - SQLite database (Diesel) with network and config tables, override via `DATABASE_URL`.
 - Per-network SSE ingestion using `veles_casper_rust_sdk` with retry state in `/tmp/<network>_last_id.txt`.
 - `/events` supports both WebSocket and SSE.
-- JSON-RPC proxy with batch support (splits batches for upstream sidecar) and per-method metrics.
+- JSON-RPC proxy with per-method metrics.
 - Binary port WebSocket proxy with upstream connection pooling.
-- Per-IP rate limiting (HTTP-level and per-JSON-RPC-item).
+- Per-IP rate limiting (HTTP-level).
 
 ## Quick start
 1. Create or seed the DB (defaults to `sqlite://./db.sqlite`):
@@ -29,8 +29,6 @@ HTTP proxy for Casper node/sidecar with per-network routing, SSE fanout, JSON-RP
 - `BIND_ADDR` (default: `0.0.0.0:8080`)
 - `RATE_LIMIT_PER_MIN` (default: `60`) - HTTP-level limiter
 - `RATE_LIMIT_BURST` (default: `20`) - HTTP-level burst
-- `RPC_RATE_LIMIT_PER_MIN` (default: `RATE_LIMIT_PER_MIN`)
-- `RPC_RATE_LIMIT_BURST` (default: `RATE_LIMIT_BURST`)
 - `SSE_BROADCAST_CAPACITY` (default: `256`)
 - `SSE_BACKLOG_LIMIT` (default: `16384`)
 - `BINARY_POOL_SIZE` (default: `4`)
@@ -68,23 +66,8 @@ Example response:
 Proxies JSON-RPC to the configured `rpc` URL.
 
 Behavior:
-- Accepts single and batch JSON-RPC payloads.
-- Batch payloads are split and forwarded one-by-one to the upstream.
-- Metrics count each JSON-RPC method item.
-- Per-item rate limiting:
-  - If over limit, returns a JSON-RPC error object for that item:
-    ```json
-    {
-      "jsonrpc": "2.0",
-      "id": 1,
-      "error": {
-        "code": -32000,
-        "message": "rate limit exceeded",
-        "data": { "retry_after_secs": 3 }
-      }
-    }
-    ```
-  - Response includes `ratelimit-remaining` HTTP header for per-item limiter.
+- Accepts single JSON-RPC payloads; batch arrays return HTTP 400.
+- Metrics count each JSON-RPC method.
 
 ### `/{network_name}/events` (WebSocket or SSE)
 Event stream of Casper SSE events with proxy-assigned IDs.
@@ -126,18 +109,12 @@ Behavior:
 - Binary port `request_id` is client-scoped; the proxy forwards IDs unchanged and does not require global uniqueness.
 
 ## Rate limiting
-Two layers:
-1. HTTP-level limiter (tower-governor):
-   - Applies to all endpoints.
-   - Adds `x-ratelimit-*` and `retry-after` headers.
-2. JSON-RPC per-item limiter:
-   - Applied inside `/rpc`.
-   - Adds `ratelimit-remaining` HTTP header.
-   - Over-limit items return JSON-RPC error objects (no HTTP 429 for the whole batch).
+HTTP-level limiter (tower-governor):
+- Applies to all endpoints.
+- Adds `x-ratelimit-*` and `retry-after` headers.
 
 Client handling guidance:
 - Treat HTTP `429` responses as rate-limited; honor `retry-after` and `x-ratelimit-*` headers.
-- For `/rpc`, parse the JSON-RPC error `data.retry_after_secs` and use the `ratelimit-remaining` header.
 
 ## SSE retry state
 Each network uses `/tmp/<network_name>_last_id.txt` to persist the last seen SSE event id.
@@ -145,12 +122,11 @@ If the listener reconnects, it uses `start_from` to resume.
 
 ## Testing
 Integration tests:
-- `tests/sidecar_batch.rs`: batch proxying to sidecar
+- `tests/sidecar_batch.rs`: batch requests rejected
 - `tests/events_ws.rs`: `/events` WebSocket stream
 - `tests/events_sse_listener.rs`: `/events` SSE stream using `veles_casper_rust_sdk::sse::listener`
 - `tests/binary_ws.rs`: `/binary` WebSocket to binary port
 - `tests/rate_limit.rs`: HTTP rate limiting
-- `tests/rpc_item_rate_limit.rs`: per-item JSON-RPC limiting
 
 Some tests require local Casper services:
 - Sidecar RPC default: `http://127.0.0.1:11101/rpc` (`SIDECAR_RPC_URL` override)

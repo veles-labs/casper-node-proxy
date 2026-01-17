@@ -8,7 +8,7 @@ use casper_node_proxy::binary_proxy::BinaryPool;
 use casper_node_proxy::handlers;
 use casper_node_proxy::metrics::RpcMetrics;
 use casper_node_proxy::models::NetworkConfig;
-use casper_node_proxy::rate_limit::{rate_limit_layer, rpc_rate_limiter};
+use casper_node_proxy::rate_limit::rate_limit_layer;
 use casper_node_proxy::state::{AppState, EventBus, NetworkState};
 
 #[tokio::test]
@@ -42,7 +42,6 @@ async fn rate_limit_rejects_excess_requests() {
         networks: Arc::new(networks),
         rpc_client,
         metrics: RpcMetrics::default(),
-        rpc_rate_limiter: rpc_rate_limiter(1_000, 1_000),
     };
 
     let app = handlers::routes(app_state).layer(rate_limit_layer(1, 1));

@@ -3,23 +3,18 @@
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
-use axum::extract::{ConnectInfo, FromRequestParts, Path, Query, State, WebSocketUpgrade};
-use axum::http::{HeaderValue, StatusCode};
+use axum::extract::{FromRequestParts, Path, Query, State, WebSocketUpgrade};
+use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use futures_util::{SinkExt, Stream, StreamExt, stream};
-use governor::clock::{Clock, DefaultClock};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::convert::Infallible;
-use std::net::SocketAddr;
 use tokio::sync::broadcast;
-use tower_governor::key_extractor::{KeyExtractor, SmartIpKeyExtractor};
 use tracing::{debug, warn};
-
-const RPC_RATE_LIMIT_REMAINING_HEADER: &str = "ratelimit-remaining";
 
 use crate::binary_proxy::BinaryPool;
 use crate::state::{AppState, EventBus, EventEnvelope, NetworkState};
@@ -106,70 +101,25 @@ async fn network_root(
 async fn rpc_proxy(
     Path(network_name): Path<String>,
     State(state): State<AppState>,
-    ConnectInfo(connect_info): ConnectInfo<SocketAddr>,
-    headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Result<Response, AppError> {
     let network = get_network(&state, &network_name)?;
     let json: Value = serde_json::from_slice(&body)
         .map_err(|err| AppError::bad_request(format!("invalid JSON-RPC payload: {err}")))?;
 
-    let client_ip = extract_client_ip(&headers, Some(connect_info));
-    let mut rpc_remaining: Option<u32> = None;
-    for method in extract_methods(&json) {
-        state.metrics.increment(&network_name, method);
-    }
-
-    if let Value::Array(items) = json {
-        if items.is_empty() {
-            return Err(AppError::bad_request("empty JSON-RPC batch"));
-        }
-
-        let mut responses = Vec::with_capacity(items.len());
-        for item in items {
-            let id = item.get("id").cloned();
-            if !item.is_object() {
-                responses.push(jsonrpc_error(id.as_ref(), "batch item must be an object"));
-                continue;
-            }
-            if let Some(ip) = client_ip {
-                match state.rpc_rate_limiter.check_key(&ip) {
-                    Ok(snapshot) => {
-                        rpc_remaining = Some(snapshot.remaining_burst_capacity());
-                    }
-                    Err(not_until) => {
-                        let wait = not_until.wait_time_from(DefaultClock::default().now());
-                        rpc_remaining = Some(0);
-                        responses.push(jsonrpc_rate_limit_error(id.as_ref(), wait.as_secs()));
-                        continue;
-                    }
-                }
-            }
-            // Sidecar doesn't accept batches, so forward each item sequentially.
-            match send_single_rpc(&state.rpc_client, &network.config.rpc, &item).await {
-                Ok(response) => responses.push(response),
-                Err(err) => responses.push(jsonrpc_error(id.as_ref(), err)),
+    match json {
+        Value::Object(map) => {
+            if let Some(method) = map.get("method").and_then(Value::as_str) {
+                state.metrics.increment(&network_name, method);
             }
         }
-        let mut response = Json(Value::Array(responses)).into_response();
-        if let Some(remaining) = rpc_remaining {
-            insert_rpc_rate_limit_header(&mut response, remaining);
+        Value::Array(_) => {
+            return Err(AppError::bad_request("JSON-RPC batching is not supported"));
         }
-        return Ok(response);
-    }
-
-    if let Some(ip) = client_ip {
-        match state.rpc_rate_limiter.check_key(&ip) {
-            Ok(snapshot) => {
-                rpc_remaining = Some(snapshot.remaining_burst_capacity());
-            }
-            Err(not_until) => {
-                let wait = not_until.wait_time_from(DefaultClock::default().now());
-                let mut response =
-                    Json(jsonrpc_rate_limit_error(None, wait.as_secs())).into_response();
-                insert_rpc_rate_limit_header(&mut response, 0);
-                return Ok(response);
-            }
+        _ => {
+            return Err(AppError::bad_request(
+                "invalid JSON-RPC payload: expected an object",
+            ));
         }
     }
 
@@ -194,88 +144,10 @@ async fn rpc_proxy(
         builder = builder.header("content-type", content_type);
     }
 
-    let mut response = builder
+    let response = builder
         .body(Body::from(body))
         .map_err(|err| AppError::bad_gateway(format!("response error: {err}")))?;
-    if let Some(remaining) = rpc_remaining {
-        insert_rpc_rate_limit_header(&mut response, remaining);
-    }
     Ok(response)
-}
-
-/// Forward a single JSON-RPC request to the upstream sidecar.
-async fn send_single_rpc(
-    client: &reqwest::Client,
-    url: &str,
-    payload: &Value,
-) -> Result<Value, String> {
-    let response = client
-        .post(url)
-        .header("content-type", "application/json")
-        .json(payload)
-        .send()
-        .await
-        .map_err(|err| format!("upstream RPC error: {err}"))?;
-
-    if !response.status().is_success() {
-        return Err(format!("upstream RPC status: {}", response.status()));
-    }
-
-    response
-        .json::<Value>()
-        .await
-        .map_err(|err| format!("upstream RPC decode error: {err}"))
-}
-
-/// Build a JSON-RPC error response with a generic error code.
-fn jsonrpc_error(id: Option<&Value>, message: impl Into<String>) -> Value {
-    let id_value = id.cloned().unwrap_or(Value::Null);
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id_value,
-        "error": {
-            "code": -32000,
-            "message": message.into(),
-        }
-    })
-}
-
-/// Build a JSON-RPC error response with retry information.
-fn jsonrpc_rate_limit_error(id: Option<&Value>, retry_after_secs: u64) -> Value {
-    let id_value = id.cloned().unwrap_or(Value::Null);
-    serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": id_value,
-        "error": {
-            "code": -32000,
-            "message": "rate limit exceeded",
-            "data": { "retry_after_secs": retry_after_secs }
-        }
-    })
-}
-
-/// Determine the best-effort client IP address for rate limiting.
-fn extract_client_ip(
-    headers: &axum::http::HeaderMap,
-    connect_info: Option<SocketAddr>,
-) -> Option<std::net::IpAddr> {
-    let mut req = axum::http::Request::new(());
-    *req.headers_mut() = headers.clone();
-    if let Some(addr) = connect_info {
-        req.extensions_mut()
-            .insert(axum::extract::ConnectInfo(addr));
-        req.extensions_mut().insert(addr);
-    }
-    SmartIpKeyExtractor.extract(&req).ok()
-}
-
-/// Insert the per-item JSON-RPC remaining burst header when available.
-fn insert_rpc_rate_limit_header(response: &mut Response, remaining: u32) {
-    if let Ok(value) = HeaderValue::from_str(&remaining.to_string()) {
-        response
-            .headers_mut()
-            .insert(RPC_RATE_LIMIT_REMAINING_HEADER, value);
-    }
 }
 
 /// Handle `/events` via websocket upgrade or SSE fallback.
@@ -312,22 +184,6 @@ fn get_network(state: &AppState, name: &str) -> Result<Arc<NetworkState>, AppErr
         .get(name)
         .cloned()
         .ok_or_else(|| AppError::not_found(format!("unknown network: {name}")))
-}
-
-/// Extract JSON-RPC method names from a request or batch.
-fn extract_methods(value: &Value) -> Vec<&str> {
-    match value {
-        Value::Object(map) => map
-            .get("method")
-            .and_then(Value::as_str)
-            .into_iter()
-            .collect(),
-        Value::Array(items) => items
-            .iter()
-            .filter_map(|item| item.get("method").and_then(Value::as_str))
-            .collect(),
-        _ => Vec::new(),
-    }
 }
 
 /// Stream events over websocket, optionally replaying from the backlog.

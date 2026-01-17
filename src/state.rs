@@ -115,7 +115,6 @@ pub struct AppState {
     pub networks: Arc<HashMap<String, Arc<NetworkState>>>,
     pub rpc_client: reqwest::Client,
     pub metrics: RpcMetrics,
-    pub rpc_rate_limiter: crate::rate_limit::RpcRateLimiter,
 }
 
 #[cfg(test)]
