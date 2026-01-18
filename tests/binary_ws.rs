@@ -11,14 +11,20 @@ use tokio_tungstenite::connect_async;
 
 use casper_node_proxy::binary_proxy::BinaryPool;
 use casper_node_proxy::handlers;
-use casper_node_proxy::metrics::RpcMetrics;
+use casper_node_proxy::metrics::AppMetrics;
 use casper_node_proxy::models::NetworkConfig;
 use casper_node_proxy::state::{AppState, EventBus, NetworkState};
 
 #[tokio::test]
 async fn binary_ws_roundtrip() {
     let network_name = "local";
-    let events = Arc::new(EventBus::new(16, 256));
+    let metrics = Arc::new(AppMetrics::new());
+    let events = Arc::new(EventBus::new(
+        network_name,
+        16,
+        256,
+        Some(Arc::clone(&metrics)),
+    ));
     let binary_addr =
         std::env::var("BINARY_PORT_ADDR").unwrap_or_else(|_| "127.0.0.1:28101".to_string());
 
@@ -32,7 +38,12 @@ async fn binary_ws_roundtrip() {
         gossip: String::new(),
     };
 
-    let binary_pool = Arc::new(BinaryPool::new(binary_addr.to_string(), 1));
+    let binary_pool = Arc::new(BinaryPool::new(
+        network_name.to_string(),
+        binary_addr.to_string(),
+        1,
+        Arc::clone(&metrics),
+    ));
     let network_state = Arc::new(NetworkState {
         config,
         events,
@@ -48,7 +59,9 @@ async fn binary_ws_roundtrip() {
     let app_state = AppState {
         networks: Arc::new(networks),
         rpc_client,
-        metrics: RpcMetrics::default(),
+        metrics: Arc::clone(&metrics),
+        binary_rate_limit_per_min: 1_000,
+        binary_rate_limit_burst: 1_000,
     };
 
     let app = handlers::routes(app_state);

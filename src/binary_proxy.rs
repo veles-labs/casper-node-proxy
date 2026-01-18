@@ -1,6 +1,7 @@
 //! Binary port proxy with a small pool of serialized upstream connections.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use casper_binary_port::{
     BinaryMessage, BinaryResponse, BinaryResponseAndRequest, Command, CommandHeader, CommandTag,
@@ -10,6 +11,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, error, warn};
+
+use crate::metrics::AppMetrics;
 
 const LENGTH_BYTES: usize = 4;
 const MAX_MESSAGE_SIZE_BYTES: usize = 4 * 1024 * 1024;
@@ -48,8 +51,10 @@ impl From<std::io::Error> for BinaryError {
 #[derive(Clone)]
 pub struct BinaryPool {
     address: Arc<String>,
+    network: Arc<String>,
     semaphore: Arc<Semaphore>,
     pool: Arc<Mutex<Vec<PooledConnection>>>,
+    metrics: Arc<AppMetrics>,
 }
 
 struct PooledConnection {
@@ -59,16 +64,24 @@ struct PooledConnection {
 
 impl BinaryPool {
     /// Create a connector with an upper bound on concurrent upstream connections.
-    pub fn new(address: String, max_connections: usize) -> Self {
+    pub fn new(
+        network: String,
+        address: String,
+        max_connections: usize,
+        metrics: Arc<AppMetrics>,
+    ) -> Self {
         Self {
             address: Arc::new(address),
+            network: Arc::new(network),
             semaphore: Arc::new(Semaphore::new(max_connections.max(1))),
             pool: Arc::new(Mutex::new(Vec::new())),
+            metrics,
         }
     }
 
     /// Send one request and await the corresponding response.
     pub async fn send(&self, payload: Vec<u8>) -> Result<Vec<u8>, BinaryError> {
+        let _inflight = self.metrics.binary_inflight_guard(self.network.as_ref());
         let address = self.address.as_ref();
         let request_id = log_binary_request(address, &payload);
         let payload_len = payload.len();
@@ -80,13 +93,26 @@ impl BinaryPool {
                 allowed_len = MAX_MESSAGE_SIZE_BYTES,
                 "binary port request too large; dropping"
             );
+            self.metrics
+                .increment_binary_response(self.network.as_ref(), "error");
             return Err(BinaryError::RequestTooLarge {
                 allowed: MAX_MESSAGE_SIZE_BYTES,
                 got: payload_len,
             });
         }
 
-        let mut connection = self.get_connection().await?;
+        let wait_start = Instant::now();
+        let connection_result = self.get_connection().await;
+        self.metrics
+            .observe_binary_queue_wait(self.network.as_ref(), wait_start.elapsed());
+        let mut connection = match connection_result {
+            Ok(conn) => conn,
+            Err(err) => {
+                self.metrics
+                    .increment_binary_response(self.network.as_ref(), "error");
+                return Err(err);
+            }
+        };
         let mut result = send_and_receive(&mut connection.stream, &payload).await;
         if is_retryable_io_error(&result) {
             warn!(
@@ -108,6 +134,8 @@ impl BinaryPool {
         if let Ok(response) = &result {
             log_binary_response(address, request_id, response);
             self.return_connection(connection).await;
+            self.metrics
+                .increment_binary_response(self.network.as_ref(), "ok");
         } else if let Err(err) = &result {
             error!(
                 %address,
@@ -115,6 +143,8 @@ impl BinaryPool {
                 payload_len,
                 "binary port request failed: {err}"
             );
+            self.metrics
+                .increment_binary_response(self.network.as_ref(), "error");
         }
         result
     }

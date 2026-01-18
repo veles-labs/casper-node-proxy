@@ -1,7 +1,7 @@
 //! SSE listener bridge that feeds the in-memory event bus.
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
 use redis::AsyncCommands;
@@ -10,12 +10,18 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use veles_casper_rust_sdk::sse::{config::ListenerConfig, event::SseEvent, listener};
 
+use crate::metrics::AppMetrics;
 use crate::state::EventBus;
 
 const RETRY_DELAY: Duration = Duration::from_secs(3);
 
 /// Spawn a resilient SSE listener for a network and feed the event bus.
-pub fn spawn_listener(network_name: String, sse_endpoint: String, events: Arc<EventBus>) {
+pub fn spawn_listener(
+    network_name: String,
+    sse_endpoint: String,
+    events: Arc<EventBus>,
+    metrics: Arc<AppMetrics>,
+) {
     tokio::spawn(async move {
         let redis_url =
             Some(std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1/".to_string()));
@@ -42,7 +48,12 @@ pub fn spawn_listener(network_name: String, sse_endpoint: String, events: Arc<Ev
             None => None,
         };
 
+        let mut first_connect = true;
         loop {
+            if !first_connect {
+                metrics.increment_sse_reconnect(&network_name);
+            }
+            first_connect = false;
             let mut builder = ListenerConfig::builder().with_endpoint(&sse_endpoint);
             if let Some(start_from) = start_from {
                 builder = builder.with_start_from(start_from.to_string());
@@ -60,10 +71,13 @@ pub fn spawn_listener(network_name: String, sse_endpoint: String, events: Arc<Ev
             match listener(config, cancellation_token).await {
                 Ok(stream) => {
                     info!(%network_name, "SSE listener connected");
+                    let connection_start = Instant::now();
+                    let mut saw_api_version = false;
                     futures_util::pin_mut!(stream);
                     while let Some(item) = stream.next().await {
                         match item {
                             Ok(envelope) => {
+                                metrics.increment_sse_ingest(&network_name);
                                 if let Some(id) = envelope.id {
                                     start_from = Some(id);
                                     if let Some(client) = redis_client.as_ref() {
@@ -83,6 +97,13 @@ pub fn spawn_listener(network_name: String, sse_endpoint: String, events: Arc<Ev
                                     }
                                 }
                                 if matches!(&envelope.data, SseEvent::ApiVersion(_)) {
+                                    if !saw_api_version {
+                                        metrics.observe_sse_time_to_first_api_version(
+                                            &network_name,
+                                            connection_start.elapsed(),
+                                        );
+                                        saw_api_version = true;
+                                    }
                                     if let Some(value) = sse_to_value(&envelope.data) {
                                         let _ = events.remember_api_version(value);
                                     }

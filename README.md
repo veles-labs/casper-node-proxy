@@ -1,6 +1,6 @@
 # Casper Node Proxy
 
-HTTP proxy for Casper node/sidecar with per-network routing, SSE fanout, JSON-RPC proxying, and binary port bridging.
+HTTP proxy for Casper node/sidecar with per-network routing, SSE fanout, JSON-RPC proxying, binary port bridging, and Prometheus metrics.
 
 ## Features
 - SQLite database (Diesel) with network and config tables, override via `DATABASE_URL`.
@@ -9,6 +9,7 @@ HTTP proxy for Casper node/sidecar with per-network routing, SSE fanout, JSON-RP
 - JSON-RPC proxy with per-method metrics.
 - Binary port WebSocket proxy with upstream connection pooling.
 - Per-IP rate limiting (HTTP-level).
+- Prometheus metrics on a localhost-only listener.
 
 ## Quick start
 1. Create or seed the DB (defaults to `sqlite://./db.sqlite`):
@@ -29,9 +30,12 @@ HTTP proxy for Casper node/sidecar with per-network routing, SSE fanout, JSON-RP
 - `BIND_ADDR` (default: `0.0.0.0:8080`)
 - `RATE_LIMIT_PER_MIN` (default: `60`) - HTTP-level limiter
 - `RATE_LIMIT_BURST` (default: `20`) - HTTP-level burst
+- `METRICS_BIND_ADDR` (default: `127.0.0.1:9090`)
 - `SSE_BROADCAST_CAPACITY` (default: `256`)
 - `SSE_BACKLOG_LIMIT` (default: `16384`)
 - `BINARY_POOL_SIZE` (default: `4`)
+- `BINARY_RATE_LIMIT_PER_MIN` (default: `RATE_LIMIT_PER_MIN`)
+- `BINARY_RATE_LIMIT_BURST` (default: `RATE_LIMIT_BURST`)
 
 ## Database schema
 Tables (Diesel):
@@ -107,6 +111,7 @@ Behavior:
 - Proxy forwards each request to the upstream and returns the raw binary response as a binary WS message.
 - Upstream connections are pooled; requests are serialized per connection.
 - Binary port `request_id` is client-scoped; the proxy forwards IDs unchanged and does not require global uniqueness.
+- Per-connection rate limiting applies to binary requests; over-limit messages receive a JSON error over the websocket.
 
 ## Rate limiting
 HTTP-level limiter (tower-governor):
@@ -115,6 +120,9 @@ HTTP-level limiter (tower-governor):
 
 Client handling guidance:
 - Treat HTTP `429` responses as rate-limited; honor `retry-after` and `x-ratelimit-*` headers.
+
+## Metrics
+Prometheus metrics are exposed on `METRICS_BIND_ADDR` at `/metrics` (defaults to `127.0.0.1:9090`).
 
 ## SSE retry state
 Each network uses `/tmp/<network_name>_last_id.txt` to persist the last seen SSE event id.

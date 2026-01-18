@@ -13,10 +13,14 @@ use futures_util::{SinkExt, Stream, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::convert::Infallible;
+use std::time::Instant;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
+use governor::clock::{Clock, DefaultClock};
+
 use crate::binary_proxy::BinaryPool;
+use crate::rate_limit::binary_connection_rate_limiter;
 use crate::state::{AppState, EventBus, EventEnvelope, NetworkState};
 
 /// Build the application router with shared state.
@@ -97,7 +101,7 @@ async fn network_root(
     Ok(Json(links))
 }
 
-/// Proxy JSON-RPC requests, enforcing per-item rate limits and metrics.
+/// Proxy JSON-RPC requests and capture per-method metrics.
 async fn rpc_proxy(
     Path(network_name): Path<String>,
     State(state): State<AppState>,
@@ -110,7 +114,9 @@ async fn rpc_proxy(
     match json {
         Value::Object(map) => {
             if let Some(method) = map.get("method").and_then(Value::as_str) {
-                state.metrics.increment(&network_name, method);
+                state
+                    .metrics
+                    .increment_jsonrpc_method(&network_name, method);
             }
         }
         Value::Array(_) => {
@@ -123,14 +129,32 @@ async fn rpc_proxy(
         }
     }
 
-    let response = state
+    let upstream_start = Instant::now();
+    let response = match state
         .rpc_client
         .post(&network.config.rpc)
         .header("content-type", "application/json")
         .body(body)
         .send()
         .await
-        .map_err(|err| AppError::bad_gateway(format!("upstream RPC error: {err}")))?;
+    {
+        Ok(response) => response,
+        Err(err) => {
+            state.metrics.increment_rpc_upstream_error(&network_name);
+            state
+                .metrics
+                .observe_rpc_upstream_duration(&network_name, upstream_start.elapsed());
+            return Err(AppError::bad_gateway(format!("upstream RPC error: {err}")));
+        }
+    };
+    state
+        .metrics
+        .observe_rpc_upstream_duration(&network_name, upstream_start.elapsed());
+    if !response.status().is_success() {
+        state
+            .metrics
+            .increment_rpc_upstream_non_success(&network_name, response.status().as_u16());
+    }
 
     let status = response.status();
     let headers = response.headers().clone();
@@ -159,11 +183,14 @@ async fn events_handler(
 ) -> Result<Response, AppError> {
     let network = get_network(&state, &network_name)?;
     let events = network.events.clone();
+    let metrics = state.metrics.clone();
     let start_from = query.start_from;
     if let Some(ws) = ws {
-        return Ok(ws.on_upgrade(move |socket| handle_events_socket(socket, events, start_from)));
+        return Ok(ws.on_upgrade(move |socket| {
+            handle_events_socket(socket, events, start_from, metrics, network_name)
+        }));
     }
-    Ok(sse_stream(events, start_from).into_response())
+    Ok(sse_stream(events, start_from, metrics, network_name).into_response())
 }
 
 /// Proxy binary-port requests over a websocket connection.
@@ -174,7 +201,14 @@ async fn binary_ws(
 ) -> Result<Response, AppError> {
     let network = get_network(&state, &network_name)?;
     let pool = network.binary_pool.clone();
-    Ok(ws.on_upgrade(move |socket| handle_binary_socket(socket, pool)))
+    let metrics = state.metrics.clone();
+    let limiter = binary_connection_rate_limiter(
+        state.binary_rate_limit_per_min,
+        state.binary_rate_limit_burst,
+    );
+    Ok(ws.on_upgrade(move |socket| {
+        handle_binary_socket(socket, pool, metrics, network_name, limiter)
+    }))
 }
 
 /// Look up a configured network or return a 404 error.
@@ -191,7 +225,10 @@ async fn handle_events_socket(
     socket: axum::extract::ws::WebSocket,
     events: Arc<EventBus>,
     start_from: Option<u64>,
+    metrics: Arc<crate::metrics::AppMetrics>,
+    network_name: String,
 ) {
+    let _guard = metrics.events_connection_guard(&network_name);
     let (mut sender, mut receiver) = socket.split();
     let mut live_rx = events.subscribe();
     let mut last_sent_id = 0u64;
@@ -244,12 +281,34 @@ async fn handle_events_socket(
     }
 }
 
-async fn handle_binary_socket(socket: axum::extract::ws::WebSocket, pool: Arc<BinaryPool>) {
+async fn handle_binary_socket(
+    socket: axum::extract::ws::WebSocket,
+    pool: Arc<BinaryPool>,
+    metrics: Arc<crate::metrics::AppMetrics>,
+    network_name: String,
+    limiter: crate::rate_limit::BinaryConnectionRateLimiter,
+) {
+    let _guard = metrics.binary_connection_guard(&network_name);
     let (mut sender, mut receiver) = socket.split();
 
     while let Some(message) = receiver.next().await {
         match message {
             Ok(axum::extract::ws::Message::Binary(payload)) => {
+                metrics.increment_binary_requests(&network_name);
+                if let Err(not_until) = limiter.check() {
+                    let wait = not_until.wait_time_from(DefaultClock::default().now());
+                    let error_payload = serde_json::json!({
+                        "error": "rate limit exceeded",
+                        "retry_after_secs": wait.as_secs(),
+                    });
+                    let _ = sender
+                        .send(axum::extract::ws::Message::Text(
+                            error_payload.to_string().into(),
+                        ))
+                        .await;
+                    metrics.increment_binary_response(&network_name, "rate_limited");
+                    continue;
+                }
                 match pool.send(payload.to_vec()).await {
                     Ok(response) => {
                         if sender
@@ -298,7 +357,10 @@ async fn send_event(
 fn sse_stream(
     events: Arc<EventBus>,
     start_from: Option<u64>,
+    metrics: Arc<crate::metrics::AppMetrics>,
+    network_name: String,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    let guard = metrics.events_connection_guard(&network_name);
     let live_rx = events.subscribe();
     let mut last_sent_id = 0u64;
     let backlog = if let Some(start_from) = start_from {
@@ -318,22 +380,25 @@ fn sse_stream(
         async move { Ok(sse_api_version_event(events.wait_for_api_version().await)) }
     });
 
-    let live_stream = stream::unfold((live_rx, last_sent_id), |(mut rx, mut last)| async move {
-        loop {
-            match rx.recv().await {
-                Ok(event) => {
-                    if event.id > last {
-                        last = event.id;
-                        return Some((Ok(sse_event(&event)), (rx, last)));
+    let live_stream = stream::unfold(
+        (live_rx, last_sent_id, guard),
+        |(mut rx, mut last, guard)| async move {
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        if event.id > last {
+                            last = event.id;
+                            return Some((Ok(sse_event(&event)), (rx, last, guard)));
+                        }
                     }
+                    Err(broadcast::error::RecvError::Lagged(_)) => {
+                        continue;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => return None,
                 }
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    continue;
-                }
-                Err(broadcast::error::RecvError::Closed) => return None,
             }
-        }
-    });
+        },
+    );
 
     Sse::new(initial_stream.chain(backlog_stream).chain(live_stream))
         .keep_alive(KeepAlive::default())

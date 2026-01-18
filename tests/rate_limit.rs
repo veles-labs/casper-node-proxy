@@ -6,7 +6,7 @@ use tokio::net::TcpListener;
 
 use casper_node_proxy::binary_proxy::BinaryPool;
 use casper_node_proxy::handlers;
-use casper_node_proxy::metrics::RpcMetrics;
+use casper_node_proxy::metrics::AppMetrics;
 use casper_node_proxy::models::NetworkConfig;
 use casper_node_proxy::rate_limit::rate_limit_layer;
 use casper_node_proxy::state::{AppState, EventBus, NetworkState};
@@ -14,7 +14,13 @@ use casper_node_proxy::state::{AppState, EventBus, NetworkState};
 #[tokio::test]
 async fn rate_limit_rejects_excess_requests() {
     let network_name = "local";
-    let events = Arc::new(EventBus::new(16, 256));
+    let metrics = Arc::new(AppMetrics::new());
+    let events = Arc::new(EventBus::new(
+        network_name,
+        16,
+        256,
+        Some(Arc::clone(&metrics)),
+    ));
     let config = NetworkConfig {
         network_name: network_name.to_string(),
         chain_name: "test-chain".to_string(),
@@ -25,7 +31,12 @@ async fn rate_limit_rejects_excess_requests() {
         gossip: String::new(),
     };
 
-    let binary_pool = Arc::new(BinaryPool::new("127.0.0.1:0".to_string(), 1));
+    let binary_pool = Arc::new(BinaryPool::new(
+        network_name.to_string(),
+        "127.0.0.1:0".to_string(),
+        1,
+        Arc::clone(&metrics),
+    ));
     let network_state = Arc::new(NetworkState {
         config,
         events,
@@ -41,7 +52,9 @@ async fn rate_limit_rejects_excess_requests() {
     let app_state = AppState {
         networks: Arc::new(networks),
         rpc_client,
-        metrics: RpcMetrics::default(),
+        metrics: Arc::clone(&metrics),
+        binary_rate_limit_per_min: 1_000,
+        binary_rate_limit_burst: 1_000,
     };
 
     let app = handlers::routes(app_state).layer(rate_limit_layer(1, 1));

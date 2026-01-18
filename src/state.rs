@@ -1,4 +1,4 @@
-//! Shared state for networks, event streams, and RPC metrics.
+//! Shared state for networks, event streams, and metrics.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -10,7 +10,7 @@ use tokio::sync::Notify;
 use tokio::sync::broadcast;
 
 use crate::binary_proxy::BinaryPool;
-use crate::metrics::RpcMetrics;
+use crate::metrics::AppMetrics;
 use crate::models::NetworkConfig;
 
 /// SSE/WS event envelope with a monotonically increasing ID.
@@ -28,12 +28,23 @@ pub struct EventBus {
     backlog_limit: usize,
     api_version: OnceLock<Value>,
     api_version_notify: Notify,
+    network: String,
+    metrics: Option<Arc<AppMetrics>>,
 }
 
 impl EventBus {
     /// Create a new event bus with bounded backlog and broadcast capacity.
-    pub fn new(backlog_limit: usize, broadcast_capacity: usize) -> Self {
+    pub fn new(
+        network: impl Into<String>,
+        backlog_limit: usize,
+        broadcast_capacity: usize,
+        metrics: Option<Arc<AppMetrics>>,
+    ) -> Self {
         let (sender, _) = broadcast::channel(broadcast_capacity.max(1));
+        let network = network.into();
+        if let Some(metrics) = metrics.as_ref() {
+            metrics.set_sse_backlog_size(&network, 0);
+        }
         Self {
             sender,
             backlog: Mutex::new(VecDeque::with_capacity(backlog_limit.min(1024))),
@@ -41,6 +52,8 @@ impl EventBus {
             backlog_limit: backlog_limit.max(1),
             api_version: OnceLock::new(),
             api_version_notify: Notify::new(),
+            network,
+            metrics,
         }
     }
 
@@ -48,13 +61,20 @@ impl EventBus {
     pub fn push(&self, data: Value) -> EventEnvelope {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
         let envelope = EventEnvelope { id, data };
-        {
+        let backlog_len = {
             let mut backlog = self.backlog.lock().expect("event backlog lock");
             backlog.push_back(envelope.clone());
             // Keep the backlog bounded to the configured size.
             if backlog.len() > self.backlog_limit {
                 let _ = backlog.pop_front();
+                if let Some(metrics) = self.metrics.as_ref() {
+                    metrics.increment_sse_backlog_dropped(&self.network);
+                }
             }
+            backlog.len()
+        };
+        if let Some(metrics) = self.metrics.as_ref() {
+            metrics.set_sse_backlog_size(&self.network, backlog_len);
         }
         let _ = self.sender.send(envelope.clone());
         envelope
@@ -114,7 +134,9 @@ pub struct NetworkState {
 pub struct AppState {
     pub networks: Arc<HashMap<String, Arc<NetworkState>>>,
     pub rpc_client: reqwest::Client,
-    pub metrics: RpcMetrics,
+    pub metrics: Arc<AppMetrics>,
+    pub binary_rate_limit_per_min: u32,
+    pub binary_rate_limit_burst: u32,
 }
 
 #[cfg(test)]
@@ -124,7 +146,7 @@ mod tests {
 
     #[test]
     fn event_bus_assigns_incrementing_ids() {
-        let bus = EventBus::new(8, 16);
+        let bus = EventBus::new("test", 8, 16, None);
         let first = bus.push(json!({"value": 1}));
         let second = bus.push(json!({"value": 2}));
         assert_eq!(first.id, 1);
@@ -133,7 +155,7 @@ mod tests {
 
     #[test]
     fn event_bus_enforces_backlog_limit() {
-        let bus = EventBus::new(3, 16);
+        let bus = EventBus::new("test", 3, 16, None);
         for i in 0..5 {
             let _ = bus.push(json!({"value": i}));
         }
@@ -144,7 +166,7 @@ mod tests {
 
     #[test]
     fn event_bus_snapshot_is_inclusive() {
-        let bus = EventBus::new(4, 16);
+        let bus = EventBus::new("test", 4, 16, None);
         for i in 0..4 {
             let _ = bus.push(json!({"value": i}));
         }

@@ -1,9 +1,13 @@
 //! Rate limit helpers for HTTP requests.
 
+use std::num::NonZeroU32;
 use std::time::Duration;
 
 use axum::body::Body;
+use governor::clock::DefaultClock;
 use governor::middleware::StateInformationMiddleware;
+use governor::state::{InMemoryState, NotKeyed};
+use governor::{Quota, RateLimiter};
 use tower_governor::GovernorLayer;
 use tower_governor::governor::GovernorConfigBuilder;
 use tower_governor::key_extractor::SmartIpKeyExtractor;
@@ -30,4 +34,19 @@ fn per_minute_to_period(per_minute: u32) -> Duration {
     }
     let millis = 60_000u64 / per_minute as u64;
     Duration::from_millis(millis.max(1))
+}
+
+pub type BinaryConnectionRateLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock>;
+
+/// Build a per-connection rate limiter for binary-port requests.
+pub fn binary_connection_rate_limiter(
+    per_minute: u32,
+    burst_size: u32,
+) -> BinaryConnectionRateLimiter {
+    let period = per_minute_to_period(per_minute);
+    let burst = NonZeroU32::new(burst_size.max(1)).expect("non-zero burst");
+    let quota = Quota::with_period(period)
+        .expect("rate limit period must be non-zero")
+        .allow_burst(burst);
+    RateLimiter::direct(quota)
 }

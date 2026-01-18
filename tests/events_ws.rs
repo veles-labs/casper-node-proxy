@@ -10,7 +10,7 @@ use veles_casper_rust_sdk::sse::event::SseEvent;
 
 use casper_node_proxy::binary_proxy::BinaryPool;
 use casper_node_proxy::handlers;
-use casper_node_proxy::metrics::RpcMetrics;
+use casper_node_proxy::metrics::AppMetrics;
 use casper_node_proxy::models::NetworkConfig;
 use casper_node_proxy::sse;
 use casper_node_proxy::state::{AppState, EventBus, NetworkState};
@@ -20,7 +20,13 @@ async fn events_ws_receives_message() {
     let network_name = "local";
     let upstream_endpoint = std::env::var("SSE_UPSTREAM_ENDPOINT")
         .unwrap_or_else(|_| "http://127.0.0.1:18101/events".to_string());
-    let events = Arc::new(EventBus::new(16, 256));
+    let metrics = Arc::new(AppMetrics::new());
+    let events = Arc::new(EventBus::new(
+        network_name,
+        16,
+        256,
+        Some(Arc::clone(&metrics)),
+    ));
     let config = NetworkConfig {
         network_name: network_name.to_string(),
         chain_name: "test-chain".to_string(),
@@ -31,7 +37,12 @@ async fn events_ws_receives_message() {
         gossip: String::new(),
     };
 
-    let binary_pool = Arc::new(BinaryPool::new("127.0.0.1:28101".to_string(), 1));
+    let binary_pool = Arc::new(BinaryPool::new(
+        network_name.to_string(),
+        "127.0.0.1:28101".to_string(),
+        1,
+        Arc::clone(&metrics),
+    ));
     let network_state = Arc::new(NetworkState {
         config,
         events: events.clone(),
@@ -40,7 +51,12 @@ async fn events_ws_receives_message() {
     let mut networks = HashMap::new();
     networks.insert(network_name.to_string(), network_state);
 
-    sse::spawn_listener(network_name.to_string(), upstream_endpoint, events);
+    sse::spawn_listener(
+        network_name.to_string(),
+        upstream_endpoint,
+        events,
+        Arc::clone(&metrics),
+    );
 
     let rpc_client = reqwest::Client::builder()
         .no_proxy()
@@ -49,7 +65,9 @@ async fn events_ws_receives_message() {
     let app_state = AppState {
         networks: Arc::new(networks),
         rpc_client,
-        metrics: RpcMetrics::default(),
+        metrics: Arc::clone(&metrics),
+        binary_rate_limit_per_min: 1_000,
+        binary_rate_limit_burst: 1_000,
     };
 
     let app = handlers::routes(app_state);
@@ -81,7 +99,10 @@ async fn events_ws_receives_message() {
 
     let value: Value = serde_json::from_str(&text).expect("event payload should be JSON");
     assert_eq!(value.get("id"), Some(&Value::Null));
-    let data = value.get("data").cloned().expect("event payload should have data");
+    let data = value
+        .get("data")
+        .cloned()
+        .expect("event payload should have data");
     let event: SseEvent = serde_json::from_value(data).expect("event payload should decode");
     assert!(matches!(event, SseEvent::ApiVersion(_)));
 
@@ -106,5 +127,8 @@ async fn events_ws_receives_message() {
         }
     }
 
-    assert!(saw_non_null_id, "expected SSE event with non-null id after ApiVersion");
+    assert!(
+        saw_non_null_id,
+        "expected SSE event with non-null id after ApiVersion"
+    );
 }
