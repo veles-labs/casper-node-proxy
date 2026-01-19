@@ -404,6 +404,12 @@ impl AppMetrics {
     }
 }
 
+impl Default for AppMetrics {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub fn network_from_path(path: &str) -> String {
     let trimmed = path.trim_start_matches('/');
     let mut segments = trimmed.split('/');

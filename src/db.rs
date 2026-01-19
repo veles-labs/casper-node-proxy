@@ -47,9 +47,7 @@ pub fn run_migrations(
             match pool.get() {
                 Ok(mut conn) => {
                     metrics.observe_db_pool_wait("migrations", start.elapsed());
-                    conn.run_pending_migrations(MIGRATIONS)
-                        .map(|_| ())
-                        .map_err(|err| err.into())
+                    conn.run_pending_migrations(MIGRATIONS).map(|_| ())
                 }
                 Err(err) => Err(err.into()),
             }
@@ -59,9 +57,7 @@ pub fn run_migrations(
             match pool.get() {
                 Ok(mut conn) => {
                     metrics.observe_db_pool_wait("migrations", start.elapsed());
-                    conn.run_pending_migrations(MIGRATIONS)
-                        .map(|_| ())
-                        .map_err(|err| err.into())
+                    conn.run_pending_migrations(MIGRATIONS).map(|_| ())
                 }
                 Err(err) => Err(err.into()),
             }
@@ -128,7 +124,7 @@ where
     C: diesel::Connection + diesel::r2d2::R2D2Connection + 'static,
 {
     let state = pool.state();
-    metrics.set_db_pool_stats(state.connections as u32, state.idle_connections as u32);
+    metrics.set_db_pool_stats(state.connections, state.idle_connections);
 }
 
 enum DbBackend {

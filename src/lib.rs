@@ -23,11 +23,26 @@ use crate::metrics::{AppMetrics, router as metrics_router, track_http};
 use crate::rate_limit::rate_limit_layer;
 use crate::state::{AppState, EventBus, NetworkState};
 
-/// Build the shared state, wire routes, and run the HTTP server.
-pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn init_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+}
+
+/// Run database migrations without starting the HTTP server.
+pub async fn migrate() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    init_tracing();
+
+    let config = AppConfig::from_env();
+    let metrics = Arc::new(AppMetrics::new());
+    let pool = db::init_pool(&config.database_url)?;
+    db::run_migrations(&pool, &metrics)?;
+    Ok(())
+}
+
+/// Build the shared state, wire routes, and run the HTTP server.
+pub async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    init_tracing();
 
     let config = AppConfig::from_env();
     let metrics = Arc::new(AppMetrics::new());

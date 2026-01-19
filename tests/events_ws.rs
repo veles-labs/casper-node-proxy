@@ -106,9 +106,10 @@ async fn events_ws_receives_message() {
     let event: SseEvent = serde_json::from_value(data).expect("event payload should decode");
     assert!(matches!(event, SseEvent::ApiVersion(_)));
 
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + Duration::from_secs(60);
     let mut saw_non_null_id = false;
-    while Instant::now() < deadline {
+    let mut total_events = 1;
+    while total_events < 10 && Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(Instant::now());
         let message = tokio::time::timeout(remaining, socket.next())
             .await
@@ -123,10 +124,14 @@ async fn events_ws_receives_message() {
         let value: Value = serde_json::from_str(&text).expect("event payload should be JSON");
         if matches!(value.get("id"), Some(Value::Number(_))) {
             saw_non_null_id = true;
-            break;
         }
+        total_events += 1;
     }
 
+    assert!(
+        total_events >= 10,
+        "expected 10 SSE events, got {total_events}"
+    );
     assert!(
         saw_non_null_id,
         "expected SSE event with non-null id after ApiVersion"

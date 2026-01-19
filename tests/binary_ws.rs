@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use casper_binary_port::InformationRequest;
 use casper_binary_port::{BinaryResponseAndRequest, Command, CommandHeader, GetRequest};
@@ -80,47 +80,64 @@ async fn binary_ws_roundtrip() {
         .await
         .expect("failed to connect to binary websocket");
 
-    let payload = build_request_payload();
-    socket
-        .send(tokio_tungstenite::tungstenite::Message::Binary(
-            payload.clone().into(),
-        ))
-        .await
-        .expect("failed to send binary payload");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut responses = 0;
+    let mut request_id: u16 = 1;
 
-    let message = tokio::time::timeout(Duration::from_secs(60), socket.next())
-        .await
-        .expect("timed out waiting for binary websocket response")
-        .expect("binary websocket closed")
-        .expect("binary websocket read error");
+    while Instant::now() < deadline {
+        let payload = build_request_payload(request_id);
+        request_id = request_id.wrapping_add(1);
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Binary(
+                payload.clone().into(),
+            ))
+            .await
+            .expect("failed to send binary payload");
 
-    let response_bytes = match message {
-        tokio_tungstenite::tungstenite::Message::Binary(data) => data,
-        other => panic!("unexpected websocket message: {other:?}"),
-    };
+        let message = tokio::time::timeout(Duration::from_secs(10), socket.next())
+            .await
+            .expect("timed out waiting for binary websocket response")
+            .expect("binary websocket closed")
+            .expect("binary websocket read error");
 
-    let (response, remainder) = BinaryResponseAndRequest::from_bytes(&response_bytes)
-        .expect("binary response should decode");
+        let response_bytes = match message {
+            tokio_tungstenite::tungstenite::Message::Binary(data) => data,
+            other => panic!("unexpected websocket message: {other:?}"),
+        };
+
+        let (response, remainder) = BinaryResponseAndRequest::from_bytes(&response_bytes)
+            .expect("binary response should decode");
+        assert!(
+            remainder.is_empty(),
+            "binary response should not have trailing bytes"
+        );
+        assert!(
+            response.response().is_success(),
+            "binary response indicates failure (code {})",
+            response.response().error_code()
+        );
+        assert!(
+            !response.response().payload().is_empty(),
+            "binary response payload should not be empty"
+        );
+        responses += 1;
+
+        if Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+    }
+
     assert!(
-        remainder.is_empty(),
-        "binary response should not have trailing bytes"
-    );
-    assert!(
-        response.response().is_success(),
-        "binary response indicates failure (code {})",
-        response.response().error_code()
-    );
-    assert!(
-        !response.response().payload().is_empty(),
-        "binary response payload should not be empty"
+        responses >= 2,
+        "expected multiple binary responses over 15s, got {responses}"
     );
 }
 
-fn build_request_payload() -> Vec<u8> {
+fn build_request_payload(request_id: u16) -> Vec<u8> {
     let info_request = InformationRequest::NodeStatus;
     let get_request = GetRequest::try_from(info_request).expect("build GetRequest");
     let command = Command::Get(get_request);
-    let header = CommandHeader::new(command.tag(), 1);
+    let header = CommandHeader::new(command.tag(), request_id);
     let mut bytes = Vec::new();
     header
         .write_bytes(&mut bytes)

@@ -351,6 +351,7 @@ dependencies = [
  "axum",
  "casper-binary-port",
  "casper-types",
+ "clap",
  "diesel",
  "diesel_migrations",
  "futures-util",

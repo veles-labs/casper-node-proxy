@@ -111,20 +111,28 @@ async fn events_sse_listener_receives_event() {
         "expected first SSE event to be ApiVersion"
     );
 
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let mut second: Option<EventEnvelope> = None;
-    while Instant::now() < deadline {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut total_events = 1;
+    let mut saw_non_null_id = false;
+    while total_events < 10 && Instant::now() < deadline {
         let remaining = deadline.saturating_duration_since(Instant::now());
-        let next = tokio::time::timeout(remaining, stream.next())
+        let next: EventEnvelope = tokio::time::timeout(remaining, stream.next())
             .await
             .expect("timed out waiting for SSE event")
             .expect("SSE stream closed")
             .expect("SSE listener error");
         if next.id.is_some() {
-            second = Some(next);
-            break;
+            saw_non_null_id = true;
         }
+        total_events += 1;
     }
 
-    second.expect("expected SSE event with non-null id after ApiVersion");
+    assert!(
+        total_events >= 10,
+        "expected 10 SSE events, got {total_events}"
+    );
+    assert!(
+        saw_non_null_id,
+        "expected SSE event with non-null id after ApiVersion"
+    );
 }

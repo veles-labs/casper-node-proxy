@@ -7,6 +7,7 @@ edition = "2024"
 axum = { version = "0.8.8", features = ["ws"] }
 casper-binary-port = "1.1.1"
 casper-types = "6.1.0"
+clap = { version = "4.5.54", features = ["derive"] }
 diesel = { version = "2.3.5", features = ["sqlite", "r2d2", "postgres"] }
 diesel_migrations = { version = "2.3.1", features = ["postgres", "sqlite"] }
 futures-util = "0.3.31"
