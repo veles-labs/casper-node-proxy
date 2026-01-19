@@ -205,10 +205,21 @@ fi
 log "casper-cli version (host)"
 casper-cli --version
 
+
+
 DEVNET_LOG="${DEVNET_LOG:-$WORK_DIR/devnet.log}"
 DEVNET_NETWORK_NAME="${DEVNET_NETWORK_NAME:-casper-proxy-test-$$}"
 DEVNET_START_CMD="${DEVNET_START_CMD:-casper-devnet start --network-name ${DEVNET_NETWORK_NAME}}"
 DEVNET_KILL_TIMEOUT="${DEVNET_KILL_TIMEOUT:-20}"
+
+log "Checking devnet assets"
+if casper-devnet assets list >/dev/null 2>&1; then
+  log "Devnet assets already present, skipping pull"
+else
+  log "No devnet assets found, pulling"
+  casper-devnet assets pull
+  casper-devnet assets list
+fi
 
 log "Starting devnet: ${DEVNET_START_CMD}"
 if command -v setsid >/dev/null 2>&1; then
@@ -251,15 +262,6 @@ cleanup_devnet() {
   fi
 }
 trap cleanup_devnet EXIT
-
-log "Checking devnet assets"
-if casper-devnet assets list >/dev/null 2>&1; then
-  log "Devnet assets already present, skipping pull"
-else
-  log "No devnet assets found, pulling"
-  casper-devnet assets pull
-  casper-devnet assets list
-fi
 
 DEVNET_WALLET_NAME="${DEVNET_WALLET_NAME:-devnet}"
 DEVNET_ACCOUNT_NAME="${DEVNET_ACCOUNT_NAME:-user-1}"
