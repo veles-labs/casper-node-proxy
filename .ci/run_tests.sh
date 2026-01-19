@@ -231,7 +231,7 @@ cleanup_devnet() {
   if ! kill -0 "$DEVNET_PID" >/dev/null 2>&1; then
     return
   fi
-  log "Stopping devnet (SIGINT)"
+  log "Stopping devnet (SIGINT)"∂
   if [ -n "${DEVNET_PGID:-}" ]; then
     kill -INT "-$DEVNET_PGID" || true
   else
@@ -261,6 +261,7 @@ if casper-devnet assets list >/dev/null 2>&1; then
 else
   log "No devnet assets found, pulling"
   casper-devnet assets pull
+  casper-devnet assets list
 fi
 
 DEVNET_WALLET_NAME="${DEVNET_WALLET_NAME:-devnet}"
