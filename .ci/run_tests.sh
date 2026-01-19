@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 CASPER_CLI_VERSION="${CASPER_CLI_VERSION:-0.3.0}"
-CASPER_DEVNET_VERSION="${CASPER_DEVNET_VERSION:-0.5.0}"
+CASPER_DEVNET_VERSION="${CASPER_DEVNET_VERSION:-0.5.1}"
 
 CASPER_CLI_BASE_URL="${CASPER_CLI_BASE_URL:-https://github.com/veles-labs/casper-cli/releases/download/${CASPER_CLI_VERSION}}"
 CASPER_DEVNET_BASE_URL="${CASPER_DEVNET_BASE_URL:-https://github.com/veles-labs/casper-devnet/releases/download/v${CASPER_DEVNET_VERSION}}"
@@ -151,19 +151,19 @@ DEVNET_SHA=""
 case "$TARGET_TRIPLE" in
   aarch64-apple-darwin)
     CLI_SHA="be60de774e14266db8454d238a1c1f3e499a39dc4002e499fe629b109a1939b3"
-    DEVNET_SHA="ce58e2aeef62452339c7d7a251adba0376dffa48b97f7026b3b1e202df62f1a8"
+    DEVNET_SHA="f13f61b2a5b039ad3a4c1198ca44737b84417010187e20bbf0dc3afc4c36f080"
     ;;
   aarch64-unknown-linux-gnu)
     CLI_SHA="3706e36f9a159632ae23e48fdc562e5f013bb5f400c0396ce183ada92f420076"
-    DEVNET_SHA="b8ecf4560254bbb31cc876d2a5085f31e3bbf9a3e0d8257e41824816abc3282a"
+    DEVNET_SHA="a28712c422efa6a1ab687830433b7ba4be5ba87137ec0dba35575f48b736bb6b"
     ;;
   x86_64-apple-darwin)
     CLI_SHA="0cd42b71abbfda90b23f7661911b5fad424a7453e3bae9da1cf37bd5ec141c7b"
-    DEVNET_SHA="be0fce5e74a47ea99fbdb9741cf828b1fc112a9cc51f9df8f07a08d9587762c0"
+    DEVNET_SHA="b14bf180b344e9792d69924b149084cddc5254ff523f64a1f36c85dc951b973a"
     ;;
   x86_64-unknown-linux-gnu)
     CLI_SHA="${CASPER_CLI_SHA256:-}"
-    DEVNET_SHA="${CASPER_DEVNET_SHA256:-}"
+    DEVNET_SHA="b681cdd30952ecb7479537e16224d1badc3fe2af2765607aca84ac4527754627"
     ;;
   *)
     log "Unsupported target triple: $TARGET_TRIPLE"
@@ -256,12 +256,11 @@ cleanup_devnet() {
 trap cleanup_devnet EXIT
 
 log "Checking devnet assets"
-ASSETS_LIST="$(casper-devnet assets list 2>/dev/null | tr -d '[:space:]')"
-if [ -z "$ASSETS_LIST" ]; then
+if casper-devnet assets list >/dev/null 2>&1; then
+  log "Devnet assets already present, skipping pull"
+else
   log "No devnet assets found, pulling"
   casper-devnet assets pull
-else
-  log "Devnet assets already present, skipping pull"
 fi
 
 DEVNET_WALLET_NAME="${DEVNET_WALLET_NAME:-devnet}"
