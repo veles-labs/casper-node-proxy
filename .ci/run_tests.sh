@@ -305,6 +305,10 @@ for ((i = 1; i <= READY_ATTEMPTS; i++)); do
   fi
   if [ "$i" -eq "$READY_ATTEMPTS" ]; then
     log "Devnet did not become ready in time"
+    if [ -f "$DEVNET_LOG" ]; then
+      log "Devnet logs:"
+      cat "$DEVNET_LOG"
+    fi
     exit 1
   fi
   sleep "$READY_SLEEP"
