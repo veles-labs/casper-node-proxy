@@ -6,8 +6,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CASPER_CLI_VERSION="${CASPER_CLI_VERSION:-0.3.0}"
 CASPER_DEVNET_VERSION="${CASPER_DEVNET_VERSION:-0.5.0}"
 
-CASPER_CLI_BASE_URL="${CASPER_CLI_BASE_URL:-https://github.com/casper-network/casper-cli/releases/download/v${CASPER_CLI_VERSION}}"
-CASPER_DEVNET_BASE_URL="${CASPER_DEVNET_BASE_URL:-https://github.com/casper-network/casper-devnet/releases/download/v${CASPER_DEVNET_VERSION}}"
+CASPER_CLI_BASE_URL="${CASPER_CLI_BASE_URL:-https://github.com/veles-labs/casper-cli/releases/download/${CASPER_CLI_VERSION}}"
+CASPER_DEVNET_BASE_URL="${CASPER_DEVNET_BASE_URL:-https://github.com/veles-labs/casper-devnet/releases/download/v${CASPER_DEVNET_VERSION}}"
 
 WORK_DIR="${CSPR_WORK_DIR:-${RUNNER_TEMP:-/tmp}/casper-ci}"
 BIN_DIR="${CSPR_BIN_DIR:-$WORK_DIR/bin}"
