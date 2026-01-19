@@ -3,17 +3,17 @@
 HTTP proxy for Casper node/sidecar with per-network routing, SSE fanout, JSON-RPC proxying, binary port bridging, and Prometheus metrics.
 
 ## Features
-- SQLite database (Diesel) with network and config tables, override via `DATABASE_URL`.
-- Per-network SSE ingestion using `veles_casper_rust_sdk` with retry state in `/tmp/<network>_last_id.txt`.
+- SQLite or Postgres database (Diesel) with network and config tables, override via `DATABASE_URL`.
+- Per-network SSE ingestion using `veles_casper_rust_sdk` with resume state stored in Redis (optional).
 - `/events` supports both WebSocket and SSE.
 - JSON-RPC proxy with per-method metrics.
 - Binary port WebSocket proxy with upstream connection pooling.
 - Per-IP rate limiting (HTTP-level).
-- Prometheus metrics on a localhost-only listener.
+- Prometheus metrics on a configurable listener (defaults to loopback only).
 
 ## Quick start
 1. Create or seed the DB (defaults to `sqlite://./db.sqlite`):
-   - Run the app once to apply migrations, or
+   - Run `cargo run -- migrate` to apply migrations, or
    - Apply `migrations/0001_create_tables` manually with `sqlite3`.
 2. Insert network config rows (example devnet):
    - `network_name`: `devnet`
@@ -23,19 +23,25 @@ HTTP proxy for Casper node/sidecar with per-network routing, SSE fanout, JSON-RP
    - `rpc`: `http://127.0.0.1:11101/rpc`
    - `binary`: `127.0.0.1:28101`
    - `gossip`: `127.0.0.1:22101`
-3. Run: `cargo run`
+3. Run: `cargo run -- start` (or `cargo run`)
+
+## CLI
+Subcommands:
+- `start` (default): run the HTTP proxy service.
+- `migrate`: apply database migrations and exit.
 
 ## Environment variables
-- `DATABASE_URL` (default: `sqlite://./db.sqlite`)
-- `BIND_ADDR` (default: `0.0.0.0:8080`)
-- `RATE_LIMIT_PER_MIN` (default: `60`) - HTTP-level limiter
-- `RATE_LIMIT_BURST` (default: `20`) - HTTP-level burst
-- `METRICS_BIND_ADDR` (default: `127.0.0.1:9090`)
-- `SSE_BROADCAST_CAPACITY` (default: `256`)
-- `SSE_BACKLOG_LIMIT` (default: `16384`)
-- `BINARY_POOL_SIZE` (default: `4`)
-- `BINARY_RATE_LIMIT_PER_MIN` (default: `RATE_LIMIT_PER_MIN`)
-- `BINARY_RATE_LIMIT_BURST` (default: `RATE_LIMIT_BURST`)
+- `DATABASE_URL` (default: `sqlite://./db.sqlite`) - database connection string (SQLite or Postgres).
+- `BIND_ADDR` (default: `0.0.0.0:8080`) - HTTP listener address for the proxy API.
+- `RATE_LIMIT_PER_MIN` (default: `60`) - HTTP-level requests per minute per client IP.
+- `RATE_LIMIT_BURST` (default: `20`) - extra burst capacity for HTTP-level rate limiting.
+- `METRICS_BIND_ADDR` (default: `127.0.0.1:9090`) - metrics listener address (Prometheus `/metrics`).
+- `SSE_BROADCAST_CAPACITY` (default: `256`) - capacity for per-network SSE broadcast channel.
+- `SSE_BACKLOG_LIMIT` (default: `16384`) - max SSE events retained in memory for replay.
+- `BINARY_POOL_SIZE` (default: `4`) - number of pooled upstream binary-port connections per network.
+- `BINARY_RATE_LIMIT_PER_MIN` (default: `RATE_LIMIT_PER_MIN`) - per-connection binary-port requests per minute.
+- `BINARY_RATE_LIMIT_BURST` (default: `RATE_LIMIT_BURST`) - per-connection binary-port burst capacity.
+- `REDIS_URL` (default: `redis://127.0.0.1/`) - Redis endpoint for persisting SSE resume state (optional).
 
 ## Database schema
 Tables (Diesel):
@@ -125,8 +131,9 @@ Client handling guidance:
 Prometheus metrics are exposed on `METRICS_BIND_ADDR` at `/metrics` (defaults to `127.0.0.1:9090`).
 
 ## SSE retry state
-Each network uses `/tmp/<network_name>_last_id.txt` to persist the last seen SSE event id.
+Each network stores the last seen SSE event id in Redis at `sse_last_id:<network_name>`.
 If the listener reconnects, it uses `start_from` to resume.
+If Redis is unavailable, resume is disabled and the listener starts without `start_from`.
 
 ## Testing
 Integration tests:
