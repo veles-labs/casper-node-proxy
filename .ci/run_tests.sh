@@ -208,8 +208,7 @@ casper-cli --version
 
 
 DEVNET_LOG="${DEVNET_LOG:-$WORK_DIR/devnet.log}"
-DEVNET_NETWORK_NAME="${DEVNET_NETWORK_NAME:-casper-proxy-test-$$}"
-DEVNET_START_CMD="${DEVNET_START_CMD:-casper-devnet start --network-name ${DEVNET_NETWORK_NAME}}"
+DEVNET_START_CMD="${DEVNET_START_CMD:-casper-devnet start}"
 DEVNET_KILL_TIMEOUT="${DEVNET_KILL_TIMEOUT:-20}"
 
 log "Checking devnet assets"
