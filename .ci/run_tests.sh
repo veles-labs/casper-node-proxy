@@ -205,9 +205,6 @@ fi
 log "casper-cli version (host)"
 casper-cli --version
 
-log "Running database migrations"
-(cd "$ROOT_DIR" && cargo run -- migrate)
-
 DEVNET_LOG="${DEVNET_LOG:-$WORK_DIR/devnet.log}"
 DEVNET_NETWORK_NAME="${DEVNET_NETWORK_NAME:-casper-proxy-test-$$}"
 DEVNET_START_CMD="${DEVNET_START_CMD:-casper-devnet start --network-name ${DEVNET_NETWORK_NAME}}"
@@ -317,3 +314,6 @@ done
 log "Running tests"
 cd "$ROOT_DIR"
 cargo test --all --locked
+
+log "Running database migrations"
+(cd "$ROOT_DIR" && cargo run -- migrate)
