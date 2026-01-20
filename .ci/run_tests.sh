@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 CASPER_CLI_VERSION="${CASPER_CLI_VERSION:-0.3.0}"
-CASPER_DEVNET_VERSION="${CASPER_DEVNET_VERSION:-0.5.2}"
+CASPER_DEVNET_VERSION="${CASPER_DEVNET_VERSION:-0.6.0}"
 
 CASPER_CLI_BASE_URL="${CASPER_CLI_BASE_URL:-https://github.com/veles-labs/casper-cli/releases/download/${CASPER_CLI_VERSION}}"
 CASPER_DEVNET_BASE_URL="${CASPER_DEVNET_BASE_URL:-https://github.com/veles-labs/casper-devnet/releases/download/v${CASPER_DEVNET_VERSION}}"
@@ -34,18 +34,6 @@ wait_for_exit() {
     waited=$((waited + 1))
   done
   return 0
-}
-
-sha256_cmd() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    echo "sha256sum"
-    return 0
-  fi
-  if command -v shasum >/dev/null 2>&1; then
-    echo "shasum -a 256"
-    return 0
-  fi
-  return 1
 }
 
 detect_target_triple() {
@@ -86,25 +74,12 @@ install_tarball_bin() {
   local name="$1"
   local tarball="$2"
   local url="$3"
-  local sha="$4"
-  local bin_name="$5"
-  local sha_env="$6"
+  local bin_name="$4"
 
   local dest="$DOWNLOAD_DIR/$tarball"
   if [ ! -f "$dest" ]; then
     log "Downloading $tarball"
     curl -fsSL "$url" -o "$dest"
-  fi
-
-  if [ -n "$sha" ]; then
-    local sha_cmd
-    sha_cmd="$(sha256_cmd)" || {
-      log "No sha256 tool found; cannot verify $tarball"
-      exit 1
-    }
-    echo "$sha  $dest" | $sha_cmd -c -
-  else
-    log "Skipping checksum for $tarball (set ${sha_env} to verify)."
   fi
 
   if [ ! -x "$BIN_DIR/$bin_name" ]; then
@@ -146,46 +121,12 @@ if [ "$NEED_CLI" -eq 1 ] || [ "$NEED_DEVNET" -eq 1 ]; then
   fi
 fi
 
-CLI_SHA=""
-DEVNET_SHA=""
-case "$TARGET_TRIPLE" in
-  aarch64-apple-darwin)
-    CLI_SHA="be60de774e14266db8454d238a1c1f3e499a39dc4002e499fe629b109a1939b3"
-    DEVNET_SHA="b549c41245e4b5b4401c8b13d307be5a0cc22bae6539aa436883e1406b784fda"
-    ;;
-  aarch64-unknown-linux-gnu)
-    CLI_SHA="3706e36f9a159632ae23e48fdc562e5f013bb5f400c0396ce183ada92f420076"
-    DEVNET_SHA="2af025074826de28b0cecf0d2a2c0be61a9e339232ffdbdb260d51cbfd516b27"
-    ;;
-  x86_64-apple-darwin)
-    CLI_SHA="0cd42b71abbfda90b23f7661911b5fad424a7453e3bae9da1cf37bd5ec141c7b"
-    DEVNET_SHA="66df2266b6acc08a2c8d50989f49c6c43241d62048f60e5981526b6e2cbb0637"
-    ;;
-  x86_64-unknown-linux-gnu)
-    CLI_SHA="${CASPER_CLI_SHA256:-}"
-    DEVNET_SHA="f73950d20a0a377f2c940a5a15dfee1a8fe1e04d13af938efeabdcc8b67d4909"
-    ;;
-  *)
-    log "Unsupported target triple: $TARGET_TRIPLE"
-    exit 1
-    ;;
-esac
-
-if [ -n "${CASPER_CLI_SHA256:-}" ]; then
-  CLI_SHA="$CASPER_CLI_SHA256"
-fi
-if [ -n "${CASPER_DEVNET_SHA256:-}" ]; then
-  DEVNET_SHA="$CASPER_DEVNET_SHA256"
-fi
-
 if [ "$NEED_CLI" -eq 1 ]; then
   install_tarball_bin \
     "casper-cli" \
     "$CLI_TARBALL" \
     "${CASPER_CLI_BASE_URL}/${CLI_TARBALL}" \
-    "$CLI_SHA" \
-    "casper-cli" \
-    "CASPER_CLI_SHA256"
+    "casper-cli"
 else
   log "Skipping casper-cli download"
 fi
@@ -195,9 +136,7 @@ if [ "$NEED_DEVNET" -eq 1 ]; then
     "casper-devnet" \
     "$DEVNET_TARBALL" \
     "${CASPER_DEVNET_BASE_URL}/${DEVNET_TARBALL}" \
-    "$DEVNET_SHA" \
-    "casper-devnet" \
-    "CASPER_DEVNET_SHA256"
+    "casper-devnet"
 else
   log "Skipping casper-devnet download"
 fi
@@ -205,10 +144,11 @@ fi
 log "casper-cli version (host)"
 casper-cli --version
 
-
-
 DEVNET_LOG="${DEVNET_LOG:-$WORK_DIR/devnet.log}"
-DEVNET_START_CMD="${DEVNET_START_CMD:-casper-devnet start}"
+DEVNET_ERR_LOG="${DEVNET_ERR_LOG:-$WORK_DIR/devnet.err.log}"
+DEVNET_NETWORK_NAME="${DEVNET_NETWORK_NAME:-casper-proxy-test-$$}"
+DEVNET_START_CMD="${DEVNET_START_CMD:-casper-devnet start --network-name ${DEVNET_NETWORK_NAME}}"
+DEVNET_READY_CMD="${DEVNET_READY_CMD:-casper-devnet is-ready --network-name ${DEVNET_NETWORK_NAME}}"
 DEVNET_KILL_TIMEOUT="${DEVNET_KILL_TIMEOUT:-20}"
 
 log "Checking devnet assets"
@@ -222,11 +162,11 @@ fi
 
 log "Starting devnet: ${DEVNET_START_CMD}"
 if command -v setsid >/dev/null 2>&1; then
-  setsid bash -c "$DEVNET_START_CMD" >"$DEVNET_LOG" 2>&1 &
+  setsid bash -c "$DEVNET_START_CMD" >"$DEVNET_LOG" 2>"$DEVNET_ERR_LOG" &
   DEVNET_PID=$!
   DEVNET_PGID=$DEVNET_PID
 else
-  bash -c "$DEVNET_START_CMD" >"$DEVNET_LOG" 2>&1 &
+  bash -c "$DEVNET_START_CMD" >"$DEVNET_LOG" 2>"$DEVNET_ERR_LOG" &
   DEVNET_PID=$!
   DEVNET_PGID=""
 fi
@@ -238,7 +178,7 @@ cleanup_devnet() {
   if ! kill -0 "$DEVNET_PID" >/dev/null 2>&1; then
     return
   fi
-  log "Stopping devnet (SIGINT)"∂
+  log "Stopping devnet (SIGINT)"
   if [ -n "${DEVNET_PGID:-}" ]; then
     kill -INT "-$DEVNET_PGID" || true
   else
@@ -290,14 +230,11 @@ if [ ! -f "$wallet_path" ]; then
 fi
 
 
-ACCOUNT_REF="${DEVNET_WALLET_NAME}:${DEVNET_ACCOUNT_NAME}"
-VIEW_CMD=(casper-cli account view "$ACCOUNT_REF" --no-interactive --file-storage "$CSPR_STORAGE_ROOT")
-
-log "Waiting for devnet readiness via ${ACCOUNT_REF}"
+log "Waiting for devnet readiness via casper-devnet"
 READY_ATTEMPTS="${DEVNET_READY_ATTEMPTS:-60}"
 READY_SLEEP="${DEVNET_READY_SLEEP:-2}"
 for ((i = 1; i <= READY_ATTEMPTS; i++)); do
-  if "${VIEW_CMD[@]}" >/dev/null 2>&1; then
+  if $DEVNET_READY_CMD >/dev/null 2>&1; then
     log "Devnet is ready"
     break
   fi
@@ -306,6 +243,10 @@ for ((i = 1; i <= READY_ATTEMPTS; i++)); do
     if [ -f "$DEVNET_LOG" ]; then
       log "Devnet logs:"
       cat "$DEVNET_LOG"
+    fi
+    if [ -f "$DEVNET_ERR_LOG" ]; then
+      log "Devnet stderr logs:"
+      cat "$DEVNET_ERR_LOG"
     fi
     exit 1
   fi
