@@ -4,6 +4,7 @@ pub mod binary_proxy;
 pub mod config;
 pub mod db;
 pub mod handlers;
+pub mod jsonrpc_proxy;
 pub mod metrics;
 pub mod models;
 pub mod rate_limit;

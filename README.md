@@ -6,7 +6,7 @@ HTTP proxy for Casper node/sidecar with per-network routing, SSE fanout, JSON-RP
 - SQLite or Postgres database (Diesel) with network and config tables, override via `DATABASE_URL`.
 - Per-network SSE ingestion using `veles_casper_rust_sdk` with resume state stored in Redis (optional).
 - `/events` supports both WebSocket and SSE.
-- JSON-RPC proxy with per-method metrics.
+- JSON-RPC proxy with per-method metrics and a casper-sidecar method allowlist.
 - Binary port WebSocket proxy with upstream connection pooling.
 - Per-IP rate limiting (HTTP-level).
 - Prometheus metrics on a configurable listener (defaults to loopback only).
@@ -76,8 +76,12 @@ Example response:
 Proxies JSON-RPC to the configured `rpc` URL.
 
 Behavior:
-- Accepts single JSON-RPC payloads; batch arrays return HTTP 400.
+- Accepts single JSON-RPC payloads; batch arrays return JSON-RPC errors with HTTP 200.
 - Metrics count each JSON-RPC method.
+- Rejects unsupported JSON-RPC methods before proxying upstream.
+- `info_get_peers` is rejected.
+- `info_get_status` responses are sanitized to return an empty `peers` list.
+- `rpc.discover` is rejected.
 
 ### `/{network_name}/events` (WebSocket or SSE)
 Event stream of Casper SSE events with proxy-assigned IDs.

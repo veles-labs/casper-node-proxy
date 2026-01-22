@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use axum::body::{Body, Bytes};
 use axum::extract::{FromRequestParts, Path, Query, State, WebSocketUpgrade};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -13,13 +12,13 @@ use futures_util::{SinkExt, Stream, StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::convert::Infallible;
-use std::time::Instant;
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
 use governor::clock::{Clock, DefaultClock};
 
 use crate::binary_proxy::BinaryPool;
+use crate::jsonrpc_proxy;
 use crate::rate_limit::binary_connection_rate_limiter;
 use crate::state::{AppState, EventBus, EventEnvelope, NetworkState};
 
@@ -27,7 +26,10 @@ use crate::state::{AppState, EventBus, EventEnvelope, NetworkState};
 pub fn routes(state: AppState) -> Router {
     Router::new()
         .route("/{network_name}/", get(network_root))
-        .route("/{network_name}/rpc", axum::routing::post(rpc_proxy))
+        .route(
+            "/{network_name}/rpc",
+            axum::routing::post(jsonrpc_proxy::rpc_proxy),
+        )
         .route("/{network_name}/events", get(events_handler))
         .route("/{network_name}/binary", get(binary_ws))
         .with_state(state)
@@ -101,79 +103,6 @@ async fn network_root(
     Ok(Json(links))
 }
 
-/// Proxy JSON-RPC requests and capture per-method metrics.
-async fn rpc_proxy(
-    Path(network_name): Path<String>,
-    State(state): State<AppState>,
-    body: Bytes,
-) -> Result<Response, AppError> {
-    let network = get_network(&state, &network_name)?;
-    let json: Value = serde_json::from_slice(&body)
-        .map_err(|err| AppError::bad_request(format!("invalid JSON-RPC payload: {err}")))?;
-
-    match json {
-        Value::Object(map) => {
-            if let Some(method) = map.get("method").and_then(Value::as_str) {
-                state
-                    .metrics
-                    .increment_jsonrpc_method(&network_name, method);
-            }
-        }
-        Value::Array(_) => {
-            return Err(AppError::bad_request("JSON-RPC batching is not supported"));
-        }
-        _ => {
-            return Err(AppError::bad_request(
-                "invalid JSON-RPC payload: expected an object",
-            ));
-        }
-    }
-
-    let upstream_start = Instant::now();
-    let response = match state
-        .rpc_client
-        .post(&network.config.rpc)
-        .header("content-type", "application/json")
-        .body(body)
-        .send()
-        .await
-    {
-        Ok(response) => response,
-        Err(err) => {
-            state.metrics.increment_rpc_upstream_error(&network_name);
-            state
-                .metrics
-                .observe_rpc_upstream_duration(&network_name, upstream_start.elapsed());
-            return Err(AppError::bad_gateway(format!("upstream RPC error: {err}")));
-        }
-    };
-    state
-        .metrics
-        .observe_rpc_upstream_duration(&network_name, upstream_start.elapsed());
-    if !response.status().is_success() {
-        state
-            .metrics
-            .increment_rpc_upstream_non_success(&network_name, response.status().as_u16());
-    }
-
-    let status = response.status();
-    let headers = response.headers().clone();
-    let body = response
-        .bytes()
-        .await
-        .map_err(|err| AppError::bad_gateway(format!("upstream body error: {err}")))?;
-
-    let mut builder = Response::builder().status(status);
-    if let Some(content_type) = headers.get("content-type") {
-        builder = builder.header("content-type", content_type);
-    }
-
-    let response = builder
-        .body(Body::from(body))
-        .map_err(|err| AppError::bad_gateway(format!("response error: {err}")))?;
-    Ok(response)
-}
-
 /// Handle `/events` via websocket upgrade or SSE fallback.
 async fn events_handler(
     Path(network_name): Path<String>,
@@ -212,7 +141,7 @@ async fn binary_ws(
 }
 
 /// Look up a configured network or return a 404 error.
-fn get_network(state: &AppState, name: &str) -> Result<Arc<NetworkState>, AppError> {
+pub(crate) fn get_network(state: &AppState, name: &str) -> Result<Arc<NetworkState>, AppError> {
     state
         .networks
         .get(name)

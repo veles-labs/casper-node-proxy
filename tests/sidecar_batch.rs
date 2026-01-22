@@ -93,9 +93,8 @@ async fn proxy_rejects_batched_requests() {
         .await
         .expect("proxy RPC endpoint must be reachable for integration tests");
 
-    assert_eq!(
-        response.status(),
-        reqwest::StatusCode::BAD_REQUEST,
+    assert!(
+        response.status().is_success(),
         "proxy RPC returned unexpected status: {}",
         response.status()
     );
@@ -105,8 +104,19 @@ async fn proxy_rejects_batched_requests() {
         .await
         .expect("proxy RPC response must be valid JSON");
     assert_eq!(
-        value.get("error").and_then(|v| v.as_str()),
-        Some("JSON-RPC batching is not supported"),
-        "expected batch rejection error"
+        value
+            .get("error")
+            .and_then(|v| v.get("code"))
+            .and_then(|v| v.as_i64()),
+        Some(-32600),
+        "expected invalid request error"
+    );
+    assert_eq!(
+        value
+            .get("error")
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.as_str()),
+        Some("Invalid Request"),
+        "expected invalid request message"
     );
 }
